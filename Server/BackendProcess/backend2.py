@@ -3,24 +3,27 @@ from flask import Flask, request, jsonify, send_file
 import cv2
 from flask_cors import CORS
 import os
+#from VideoProcessor import VideoProcessor
 
 app = Flask(__name__)
 CORS(app)
 
-UPLOADS_FOLDER = "C://src//Flask-app//Backend//server//uploads"
+UPLOADS_FOLDER = "C://src//VideoLabellingBackend//Server//uploads"
 app.config['UPLOADS_FOLDER'] = UPLOADS_FOLDER
+
+keyframes_list = []
 
 @app.route('/upload', methods=['POST'])
 def upload_video():
     if request.method == 'POST':
         video_file = request.files['video']
         video_filename = video_file.filename
-        video_path = f"uploads/{video_filename}"
+        video_path = f"../uploads/{video_filename}"
 
         # Save video file
         video_file.save(video_path)
         video_url = f"http://localhost:5000/uploads/{video_filename}"
-        processed_video_url = f"C://src//Flask-app//Backend//server//uploads//{video_filename}"
+        processed_video_url = f"C://src//VideoLabellingBackend//Server//uploads//{video_filename}"
 
         print(processed_video_url)
 
@@ -36,7 +39,7 @@ def get_frame():
     if request.method == 'POST':
         video_filename = request.json['videoFilename']
         frame_index = request.json['frameIndex']
-        video_path = f"uploads/{video_filename}"
+        video_path = f"../uploads/{video_filename}"
 
         # Extract and return the specified frame
         cap = cv2.VideoCapture(video_path)
@@ -55,7 +58,7 @@ def get_frame():
 def get_frame_info():
     if request.method == 'POST':
         video_filename = request.json['videoFilename']
-        video_path = f"uploads/{video_filename}"
+        video_path = f"../uploads/{video_filename}"
 
         # Get video frame rate
         cap = cv2.VideoCapture(video_path)
@@ -73,6 +76,9 @@ def save_keyframes():
         # Save keyframes data to the global list
         keyframes_list = keyframes_data
         print(keyframes_list)
+        # video_path = os.path.join(app.config['UPLOADS_FOLDER'], keyframes_data[0]['video_filename'])
+        # processor = VideoProcessor(keyframes_list, video_path)
+        # processor.process_video()
 
         return jsonify({'message': 'Keyframes saved successfully'})
 
