@@ -64,5 +64,17 @@ def get_frame_info():
 
         return jsonify({'frameRate': frame_rate})
 
+@app.route('/save_keyframes', methods=['POST'])
+def save_keyframes():
+    if request.method == 'POST':
+        global keyframes_list
+        keyframes_data = request.json['keyframes']
+
+        # Save keyframes data to the global list
+        keyframes_list = keyframes_data
+        print(keyframes_list)
+
+        return jsonify({'message': 'Keyframes saved successfully'})
+
 if __name__ == "__main__":
     app.run(host='0.0.0.0', debug=True)
