@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify, send_file
 import cv2
 from flask_cors import CORS
 import os
-#from VideoProcessor import VideoProcessor
+from VideoProcessor import VideoProcessor
 
 app = Flask(__name__)
 CORS(app)
@@ -71,14 +71,16 @@ def get_frame_info():
 def save_keyframes():
     if request.method == 'POST':
         global keyframes_list
-        keyframes_data = request.json['keyframes']
+        keyframes_data = request.json.get('keyframes', [])
+        video_filename = request.json.get('video_filename', None)
 
         # Save keyframes data to the global list
         keyframes_list = keyframes_data
         print(keyframes_list)
-        # video_path = os.path.join(app.config['UPLOADS_FOLDER'], keyframes_data[0]['video_filename'])
-        # processor = VideoProcessor(keyframes_list, video_path)
-        # processor.process_video()
+        video_path = os.path.join(app.config['UPLOADS_FOLDER'], video_filename)
+        print(video_path)
+        processor = VideoProcessor(keyframes_list, video_path)
+        processor.process_keyFrames()
 
         return jsonify({'message': 'Keyframes saved successfully'})
 
