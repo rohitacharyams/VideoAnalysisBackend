@@ -1,5 +1,5 @@
 # Import necessary libraries
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response
 import cv2
 from flask_cors import CORS
 import os
@@ -17,6 +17,11 @@ from bson import ObjectId
 import io
 from azure.storage.blob import BlobServiceClient
 import random
+from io import BytesIO
+import requests
+import numpy as np
+import tempfile
+import re, shutil
 
 
 app = Flask(__name__)
@@ -27,7 +32,7 @@ from pymongo import MongoClient
 import urllib.parse
 
 
-uri = "get it from whatsapp group"
+uri = "Collect_from_Whatsapp"
 
 # Create a new client and connect to the server
 client = MongoClient(uri)
@@ -37,19 +42,53 @@ fs = gridfs.GridFS(db)
 
 UPLOADS_FOLDER = "/Users/rohitacharya/danceAI/VideoAnalysisBackend-main/Server/uploads"
 app.config['UPLOADS_FOLDER'] = UPLOADS_FOLDER
+current_video_path = None
 
 # Azure Storage connection string
-connection_string = "get it from whatsapp group"
+connection_string = "Collect_from_Whatsapp"
 blob_service_client = BlobServiceClient.from_connection_string(connection_string)
 container_name = "aistdancevideos"
 
 
 keyframes_list = []
+temp_dir = tempfile.mkdtemp()
 
+# Functions
 def serialize_video(video):
     video['_id'] = str(video['_id'])
     return video
 
+
+def run_mmpose(video_path):
+    path_to_mmpose = "/Users/rohitacharya/mmpose"
+    python_path = "/opt/homebrew/opt/python@3.10/bin/python3.10"
+    mmpose_command = [
+        python_path, f"{path_to_mmpose}/demo/topdown_demo_with_mmdet.py",
+        f"{path_to_mmpose}/demo/mmdetection_cfg/rtmdet_m_640-8xb32_coco-person.py",
+        "https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth",
+        f"{path_to_mmpose}/configs/wholebody_2d_keypoint/topdown_heatmap/coco-wholebody/td-hm_hrnet-w48_dark-8xb32-210e_coco-wholebody-384x288.py",
+        "/Users/rohitacharya/Downloads/model_full_body.pth",
+        "--input", video_path,
+        "--show"
+    ]
+
+    print("Heywouhekwuh")
+
+    print("command is :", mmpose_command)
+
+    subprocess.run(mmpose_command)
+
+
+def fetch_keypoints_from_mongodb(video_id, track_id):
+    video = video_collection.find_one({'video_id': video_id})
+    if video:
+        frames = video['frames']
+        keypoints = [frames[frame]['tracks'][track_id]['keypoints'] for frame in frames if track_id in frames[frame]['tracks']]
+        return keypoints
+    return None
+
+
+# Routes 
 @app.route('/api/videos', methods=['GET'])
 def get_videos():
     videos = list(video_collection.find())
@@ -109,32 +148,49 @@ def get_reel(video_id):
 
     return send_file(video_path)
 
-def run_mmpose(video_path):
-    path_to_mmpose = "/Users/rohitacharya/mmpose"
-    python_path = "/opt/homebrew/opt/python@3.10/bin/python3.10"
-    mmpose_command = [
-        python_path, f"{path_to_mmpose}/demo/topdown_demo_with_mmdet.py",
-        f"{path_to_mmpose}/demo/mmdetection_cfg/rtmdet_m_640-8xb32_coco-person.py",
-        "https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth",
-        f"{path_to_mmpose}/configs/wholebody_2d_keypoint/topdown_heatmap/coco-wholebody/td-hm_hrnet-w48_dark-8xb32-210e_coco-wholebody-384x288.py",
-        "/Users/rohitacharya/Downloads/model_full_body.pth",
-        "--input", video_path,
-        "--show"
-    ]
+def clear_temp_files():
+    global current_video_filename
+    for filename in os.listdir(f"{UPLOADS_FOLDER}"):
+        file_path = os.path.join(f"{UPLOADS_FOLDER}", filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print(f'Failed to delete {file_path}. Reason: {e}')
+    current_video_filename = None
 
-    print("Heywouhekwuh")
+@app.route('/api/fetch_video', methods=['POST'])
+def fetch_video():
+    global current_video_filename
+    data = request.json
+    video_url = data.get('url')
+    if not video_url:
+        return jsonify({"error": "No video URL provided"}), 400
 
-    print("command is :", mmpose_command)
+    # Clear previous video
+    clear_temp_files()
 
-    subprocess.run(mmpose_command)
+    response = requests.get(video_url, stream=True)
+    video_filename = os.path.basename(video_url)
+    video_path = os.path.join(f"{UPLOADS_FOLDER}", video_filename)
+    with open(video_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
 
-def fetch_keypoints_from_mongodb(video_id, track_id):
-    video = video_collection.find_one({'video_id': video_id})
-    if video:
-        frames = video['frames']
-        keypoints = [frames[frame]['tracks'][track_id]['keypoints'] for frame in frames if track_id in frames[frame]['tracks']]
-        return keypoints
-    return None
+    current_video_filename = video_filename
+    video_url = f"http://localhost:51040/uploads/{video_filename}"
+    return jsonify({"message": "Video fetched", "videoUrl": video_url})
+
+@app.route('/api/get_video', methods=['GET'])
+def get_video_from_local(filename):
+    return send_from_directory(f"{UPLOADS_FOLDER}", filename)
+
+@app.route('/api/clear_temp', methods=['POST'])
+def clear_temp():
+    clear_temp_files()
+    return jsonify({"message": "Temporary files cleared"})
 
 
 @app.route('/api/composite_thumbnail/<video_id>', methods=['GET'])
@@ -202,6 +258,7 @@ def upload_video():
 @app.route('/uploads/<filename>')
 def get_video(filename):
     # Serve the video file
+    print("Why this is getting called", filename)
     return send_file(os.path.join(app.config['UPLOADS_FOLDER'], filename))
 
 @app.route('/api/videosFromStorage')
@@ -212,6 +269,7 @@ def get_videos_from_blob():
         return jsonify({"error": "No videos found"}), 404
     random_video = random.choice(blob_list)
     video_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{random_video}"
+    print("Video url is :", video_url)
     return jsonify({"url": video_url})
 
 @app.route('/get_frame', methods=['POST'])
