@@ -21,7 +21,8 @@ from io import BytesIO
 import requests
 import numpy as np
 import tempfile
-import re, shutil
+import re, shutil, json
+from azure.data.tables import TableServiceClient, UpdateMode
 
 
 app = Flask(__name__)
@@ -32,7 +33,7 @@ from pymongo import MongoClient
 import urllib.parse
 
 
-uri = "Collect_from_Whatsapp"
+uri = "get_from_whatsapp"
 
 # Create a new client and connect to the server
 client = MongoClient(uri)
@@ -45,15 +46,69 @@ app.config['UPLOADS_FOLDER'] = UPLOADS_FOLDER
 current_video_path = None
 
 # Azure Storage connection string
-connection_string = "Collect_from_Whatsapp"
-blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+connection_string = "get_from_whatsapp_source"
+blob_service_client_source = BlobServiceClient.from_connection_string(connection_string)
 container_name = "aistdancevideos"
+
+connection_string_table = "get_from_whatsapp_destination" # Both of them are different
+blob_service_client_dest = BlobServiceClient.from_connection_string(connection_string_table)
+
+
+source_container_name = "aistdancevideos"
+destination_container_name = "labellingdone"
+
+# Azure Table Storage setup
+table_service_client = TableServiceClient.from_connection_string(connection_string_table)
+table_name = "LabeledVideos"
+table_client = table_service_client.create_table_if_not_exists(table_name=table_name)
+
 
 
 keyframes_list = []
 temp_dir = tempfile.mkdtemp()
 
 # Functions
+
+def query_all_entities():
+    entities = table_client.list_entities()
+    for entity in entities:
+        video_id = entity['RowKey']
+        video_filename = entity['VideoFilename']
+        keyframes_json = entity['Keyframes']
+        keyframes = json.loads(keyframes_json)
+        print(f"Video ID: {video_id}")
+        print(f"Video Filename: {video_filename}")
+        print(f"Keyframes: {keyframes}")
+        print("-------------------------------")
+
+
+def save_keyframes_to_table(video_id, video_filename, keyframes):
+    keyframes_json = json.dumps(keyframes)
+    entity = {
+        'PartitionKey': 'LabeledVideos',
+        'RowKey': video_id,
+        'VideoFilename': video_filename,
+        'Keyframes': keyframes_json
+    }
+    table_client.upsert_entity(entity=entity, mode=UpdateMode.MERGE)
+
+    # Uncomment below if you want to see all entries of Azure Table Storage we are using 
+    # query_all_entities()
+
+def check_video_labeled(video_filename):
+    query_filter = f"PartitionKey eq 'LabeledVideos' and VideoFilename eq '{video_filename}'"
+    entities = table_client.query_entities(query_filter=query_filter)
+    return any(entities)
+
+def move_video_to_new_container(video_filename):
+    source_blob_client = blob_service_client_source.get_blob_client(container=source_container_name, blob=video_filename)
+    destination_blob_client = blob_service_client_dest.get_blob_client(container=destination_container_name, blob=video_filename)
+
+    source_blob_data = source_blob_client.download_blob().readall()
+    destination_blob_client.upload_blob(source_blob_data, overwrite=True)
+    source_blob_client.delete_blob()
+
+
 def serialize_video(video):
     video['_id'] = str(video['_id'])
     return video
@@ -270,7 +325,7 @@ def get_videos_from_blob():
     random_video = random.choice(blob_list)
     video_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{random_video}"
     print("Video url is :", video_url)
-    return jsonify({"url": video_url})
+    return jsonify({"url": video_url, "videoFilename": random_video})
 
 @app.route('/get_frame', methods=['POST'])
 def get_frame():
@@ -305,23 +360,33 @@ def get_frame_info():
 
         return jsonify({'frameRate': frame_rate})
 
+def generate_guid():
+    return str(uuid.uuid4())
 
 @app.route('/save_keyframes', methods=['POST'])
 def save_keyframes():
     if request.method == 'POST':
-        global keyframes_list
-        keyframes_data = request.json.get('keyframes', [])
-        video_filename = request.json.get('video_filename', None)
+        try:
+            global keyframes_list
+            keyframes_data = request.json.get('keyframes', [])
+            video_filename = request.json.get('video_filename', None)
+            video_id = generate_guid()
 
-        # Save keyframes data to the global list
-        keyframes_list = keyframes_data
-        print(keyframes_list)
-        video_path = os.path.join(app.config['UPLOADS_FOLDER'], video_filename)
-        print(video_path)
-        processor = VideoProcessor(keyframes_list, video_path)
-        processor.process_keyFrames()
+            print("The values of keyframes_data, video_filename, video_id", keyframes_data, video_filename, video_id)
 
-        return jsonify({'message': 'Keyframes saved successfully'})
+            if not keyframes_data or not video_filename or not video_id:
+                return jsonify({'error': 'Missing keyframes data, video filename, or video ID'}), 400
+
+            # Save keyframes data to Table Storage
+            save_keyframes_to_table(video_id, video_filename, keyframes_data)
+
+            # Move video to new container
+            move_video_to_new_container(video_filename)
+
+            return jsonify({'message': 'Keyframes saved and video moved successfully'})
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return jsonify({"error": str(e)}), 500
     
 
 
