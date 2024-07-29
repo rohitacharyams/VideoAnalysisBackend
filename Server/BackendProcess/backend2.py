@@ -1,28 +1,27 @@
 # Import necessary libraries
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response
+from flask import Flask, request, jsonify, send_file, send_from_directory
 import cv2
 from flask_cors import CORS
 import os
+import sys
 from flask_bcrypt import Bcrypt
-from flask_pymongo import PyMongo
-from VideoProcessor import VideoProcessor
-from pymongo.mongo_client import MongoClient
 from pymongo import ASCENDING
 import subprocess
-import urllib.parse
 import uuid
 import datetime
-import gridfs
-from bson import ObjectId
-import io
 from azure.storage.blob import BlobServiceClient
 import random
-from io import BytesIO
 import requests
-import numpy as np
-import tempfile
-import re, shutil, json
+import shutil, json
 from azure.data.tables import TableServiceClient, UpdateMode
+
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+
+# Add the parent directory of 'step_segmentation' to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../step_segmentation')))
+
+from audio_processor import AudioProcessor
 
 
 app = Flask(__name__)
@@ -33,39 +32,33 @@ from pymongo import MongoClient
 import urllib.parse
 
 
-uri = "get_from_whatsapp"
 
-# Create a new client and connect to the server
-client = MongoClient(uri)
-db = client['dance_database']
-video_collection = db['videos']
-fs = gridfs.GridFS(db)
-
-UPLOADS_FOLDER = "/Users/rohitacharya/danceAI/VideoAnalysisBackend-main/Server/uploads"
+# Dynamically set the UPLOADS_FOLDER path based on the script's location
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOADS_FOLDER = os.path.join(BASE_DIR, 'uploads')
 app.config['UPLOADS_FOLDER'] = UPLOADS_FOLDER
 current_video_path = None
 
 # Azure Storage connection string
-connection_string = "get_from_whatsapp_source"
+connection_string = "DefaultEndpointsProtocol=https;AccountName=labelleddata;AccountKey=SYeJcsakHQsy1exnOByL9Eh+hM0xBfR2166EjTy28Hvxzt5cvGhiOS7svfmRjJEDrAqbFY0mt6ta+AStGed7bw==;EndpointSuffix=core.windows.net"
 blob_service_client_source = BlobServiceClient.from_connection_string(connection_string)
-container_name = "aistdancevideos"
+container_name = "reelssection"
+container_name_labelled = "reelssectionlabelled"
 
-connection_string_table = "get_from_whatsapp_destination" # Both of them are different
+connection_string_table = "DefaultEndpointsProtocol=https;AccountName=labelleddata;AccountKey=SYeJcsakHQsy1exnOByL9Eh+hM0xBfR2166EjTy28Hvxzt5cvGhiOS7svfmRjJEDrAqbFY0mt6ta+AStGed7bw==;EndpointSuffix=core.windows.net"
 blob_service_client_dest = BlobServiceClient.from_connection_string(connection_string_table)
 
 
-source_container_name = "aistdancevideos"
-destination_container_name = "labellingdone"
+source_container_name = "reelssection"
+destination_container_name = "reelssectionlabelled"
 
 # Azure Table Storage setup
 table_service_client = TableServiceClient.from_connection_string(connection_string_table)
-table_name = "LabeledVideos"
+table_name = "labelledwithmusic"
 table_client = table_service_client.create_table_if_not_exists(table_name=table_name)
 
 
-
 keyframes_list = []
-temp_dir = tempfile.mkdtemp()
 
 # Functions
 
@@ -133,75 +126,29 @@ def run_mmpose(video_path):
 
     subprocess.run(mmpose_command)
 
+def fetch_steps_data(video_filename):
+    query_filter = f"VideoFilename eq '{video_filename}'"
+    steps = []
 
-def fetch_keypoints_from_mongodb(video_id, track_id):
-    video = video_collection.find_one({'video_id': video_id})
-    if video:
-        frames = video['frames']
-        keypoints = [frames[frame]['tracks'][track_id]['keypoints'] for frame in frames if track_id in frames[frame]['tracks']]
-        return keypoints
-    return None
+    entities = table_client.query_entities(query_filter)
+    print("The video file name is :", video_filename)
+    for entity in entities:
+        keyframes_json = entity['Keyframes']
+        keyframes = json.loads(keyframes_json)
+        for step in keyframes:
+            steps.append({
+                'keyFrameIn': step['keyFrameIn'],
+                'keyFrameOut': step['keyFrameOut'],
+                'newStepId': step['newStepId'],
+                'components': step.get('components', {})
+                # Add any other relevant fields here
+            })
+
+    return steps
 
 
-# Routes 
-@app.route('/api/videos', methods=['GET'])
-def get_videos():
-    videos = list(video_collection.find())
-    video_list = []
-    for video in videos:
-        video_list.append({
-            'video_id': video['video_id'],
-            'title': video['title'],
-            'upload_date': video['upload_date'],
-            'uploaded_by': video['uploaded_by'],
-        })
-    print(video_list)
-    return jsonify(video_list)
 
-@app.route('/api/bbox_info/<video_id>', methods=['GET'])
-def get_bbox_info(video_id):
-    video = video_collection.find_one({'video_id': video_id})
-    if video and 'bbox_info' in video:
-        return jsonify(video['bbox_info'])
-    return jsonify({'error': 'Bounding box information not found'}), 404
 
-@app.route('/api/detect_dancer/<video_id>', methods=['POST'])
-def detect_dancer(video_id):
-    data = request.json
-    x, y = data['x'], data['y']
-    video = video_collection.find_one({'video_id': video_id})
-    if video:
-        for frame in video['frames'].values():
-            for track_id, track_data in frame['tracks'].items():
-                bbox = track_data['bbox']
-                if bbox[0] <= x <= bbox[2] and bbox[1] <= y <= bbox[3]:
-                    keypoints = track_data['keypoints']
-                    return jsonify({'dancerId': track_id, 'keypoints': keypoints})
-        return jsonify({'error': 'Dancer not found'}), 404
-    else:
-        return jsonify({'error': 'Video not found'}), 404
-
-@app.route('/api/video/<video_id>', methods=['GET'])
-def get_reel(video_id):
-    print("Say HIisd baby")
-    video = video_collection.find_one({'video_id': video_id})
-    if not video:
-        return jsonify({'error': 'Video not found'}), 404
-    
-    print("Video id is ", video_id)
-
-    video_path = os.path.join(app.config['UPLOADS_FOLDER'], video['title'])
-
-    # video_path = video_path + '.mp4'
-
-    print("Video path is ", video_path)
-
-    if not os.path.exists(video_path):
-        return jsonify({'error': 'Video file not found'}), 404
-    
-    print("Video path is sent successfully")
-
-    return send_file(video_path)
 
 def clear_temp_files():
     global current_video_filename
@@ -235,36 +182,22 @@ def fetch_video():
             f.write(chunk)
 
     current_video_filename = video_filename
-    video_url = f"http://localhost:51040/uploads/{video_filename}"
+    video_url = f"https://danceai.us-cdp2.choreoapps.devuploads/{video_filename}"
     return jsonify({"message": "Video fetched", "videoUrl": video_url})
 
 @app.route('/api/get_video', methods=['GET'])
 def get_video_from_local(filename):
     return send_from_directory(f"{UPLOADS_FOLDER}", filename)
 
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "Healthy"}), 200
+
+
 @app.route('/api/clear_temp', methods=['POST'])
 def clear_temp():
     clear_temp_files()
     return jsonify({"message": "Temporary files cleared"})
-
-
-@app.route('/api/composite_thumbnail/<video_id>', methods=['GET'])
-def get_composite_image(video_id):
-    print(video_id)
-    video = video_collection.find_one({'video_id': video_id})
-    # print("Video:", video)
-    if video and 'composite_image_path' in video:
-        print("Composite image path is :",video['composite_image_path'])
-        return send_file(video['composite_image_path'])
-    return jsonify({'error': 'Composite image not found'}), 404
-
-@app.route('/api/keypoints/<video_id>/<track_id>', methods=['GET'])
-def get_keypoints(video_id, track_id):
-    keypoints = fetch_keypoints_from_mongodb(video_id, track_id)
-    if keypoints:
-        print("Keypoints: ", (keypoints))
-        return jsonify(keypoints)
-    return jsonify({'error': 'Keypoints not found'}), 404
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -294,16 +227,36 @@ def upload_reels():
 
     return jsonify({'message': 'Video uploaded and processed successfully'}), 201
 
+@app.route('/api/get_probable_end_frames', methods=['POST'])
+def get_probable_end_frames():
+    data = request.json
+    video_filename = data.get('videoFilename')
+    start_frame = data.get('startFrame')
+    frame_rate = data.get('frameRate')
+    
+    if not video_filename or start_frame is None or frame_rate is None:
+        return jsonify({"error": "Missing required parameters"}), 400
+    
+    video_path = os.path.join(app.config['UPLOADS_FOLDER'], video_filename)
+    processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
+    processor.process()
+    probable_end_frames = processor.get_probable_end_frames(start_frame, frame_rate)
+    return jsonify({"probableEndFrames": probable_end_frames})
+
 @app.route('/upload', methods=['POST'])
 def upload_video():
     if request.method == 'POST':
+        # Clear previous video
+        clear_temp_files()
         video_file = request.files['video']
         video_filename = video_file.filename
         video_path = f"{UPLOADS_FOLDER}/{video_filename}"
 
+        print("Control came here ?")
+
         # Save video file
         video_file.save(video_path)
-        video_url = f"http://localhost:51040/uploads/{video_filename}"
+        video_url = f"https://danceai.us-cdp2.choreoapps.devuploads/{video_filename}"
         processed_video_url = f"C://src//VideoLabellingBackend//Server//uploads//{video_filename}"
 
         print("Processed video url", processed_video_url)
@@ -314,18 +267,45 @@ def upload_video():
 def get_video(filename):
     # Serve the video file
     print("Why this is getting called", filename)
+    video_path = f"{UPLOADS_FOLDER}/{filename}"
+
+    # processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
+    # processor.process()
+
+    # Get video frame rate
+    cap = cv2.VideoCapture(video_path)
+    frame_rate = cap.get(cv2.CAP_PROP_FPS)
+    print("Frame rate is : ",frame_rate)
     return send_file(os.path.join(app.config['UPLOADS_FOLDER'], filename))
 
 @app.route('/api/videosFromStorage')
 def get_videos_from_blob():
-    container_client = blob_service_client.get_container_client(container_name)
+    container_client = blob_service_client_source.get_container_client(container_name)
     blob_list = [blob.name for blob in container_client.list_blobs()]
     if not blob_list:
         return jsonify({"error": "No videos found"}), 404
     random_video = random.choice(blob_list)
-    video_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{random_video}"
+    video_url = f"https://{blob_service_client_source.account_name}.blob.core.windows.net/{container_name}/{random_video}"
     print("Video url is :", video_url)
     return jsonify({"url": video_url, "videoFilename": random_video})
+
+@app.route('/api/videosFromStorageLabelled')
+def get_videos_from_blob_labelled():
+    clear_temp()
+    query_all_entities()
+    container_client = blob_service_client_source.get_container_client(container_name_labelled)
+    print("HEllllllllloooooooo jiiiiiiiiii")
+    blob_list = [blob.name for blob in container_client.list_blobs()]
+    if not blob_list:
+        return jsonify({"error": "No videos found"}), 404
+    random_video = random.choice(blob_list)
+    video_url = f"https://{blob_service_client_source.account_name}.blob.core.windows.net/{container_name_labelled}/{random_video}"
+    print("Video url is :", video_url)
+    # Get steps data too
+    # Get steps data
+    steps_data = fetch_steps_data(random_video)
+    print("The value of steps data is :", steps_data)
+    return jsonify({"url": video_url, "videoFilename": random_video, "steps": steps_data})
 
 @app.route('/get_frame', methods=['POST'])
 def get_frame():
@@ -353,9 +333,16 @@ def get_frame_info():
         video_filename = request.json['videoFilename']
         video_path = f"{UPLOADS_FOLDER}/{video_filename}"
 
+        print("/get frame info - ", video_filename, video_path)
+
+        processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
+        processor.process()
+
+        print("process of extracting audio is done")
         # Get video frame rate
         cap = cv2.VideoCapture(video_path)
         frame_rate = cap.get(cv2.CAP_PROP_FPS)
+        print("Now the Frame rate is : ",frame_rate)
         cap.release()
 
         return jsonify({'frameRate': frame_rate})
@@ -368,7 +355,7 @@ def save_keyframes():
     if request.method == 'POST':
         try:
             global keyframes_list
-            keyframes_data = request.json.get('keyframes', [])
+            keyframes_data = request.json.get('danceSteps', [])
             video_filename = request.json.get('video_filename', None)
             video_id = generate_guid()
 
@@ -377,10 +364,12 @@ def save_keyframes():
             if not keyframes_data or not video_filename or not video_id:
                 return jsonify({'error': 'Missing keyframes data, video filename, or video ID'}), 400
 
+            video_path = f"{UPLOADS_FOLDER}/{video_filename}"
+            # run_mmpose(video_path)
             # Save keyframes data to Table Storage
             save_keyframes_to_table(video_id, video_filename, keyframes_data)
 
-            # Move video to new container
+            # # Move video to new container
             move_video_to_new_container(video_filename)
 
             return jsonify({'message': 'Keyframes saved and video moved successfully'})
