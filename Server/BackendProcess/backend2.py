@@ -15,12 +15,8 @@ import requests
 import shutil, json
 from azure.data.tables import TableServiceClient, UpdateMode
 
-os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['MKL_NUM_THREADS'] = '1'
-
-# Add the parent directory of 'step_segmentation' to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../step_segmentation')))
-
+# os.environ['OMP_NUM_THREADS'] = '1'
+# os.environ['MKL_NUM_THREADS'] = '1'
 from audio_processor import AudioProcessor
 
 
@@ -174,19 +170,24 @@ def fetch_video():
     # Clear previous video
     clear_temp_files()
 
+    print("heyyasuaskadsbaksdah")
+
     response = requests.get(video_url, stream=True)
     video_filename = os.path.basename(video_url)
     video_path = os.path.join(f"{UPLOADS_FOLDER}", video_filename)
+    print("The video path is :", video_path)
     with open(video_path, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
 
     current_video_filename = video_filename
-    video_url = f"https://danceai.us-cdp2.choreoapps.devuploads/{video_filename}"
+    print("the video filename here is :", video_filename)
+    video_url = f"https://danceai.us-cdp2.choreoapps.devuploads/uploads/{video_filename}"
     return jsonify({"message": "Video fetched", "videoUrl": video_url})
 
 @app.route('/api/get_video', methods=['GET'])
 def get_video_from_local(filename):
+    print("Heyysbdhksbdjshdbsjdbjkhdbkshabdkshb")
     return send_from_directory(f"{UPLOADS_FOLDER}", filename)
 
 @app.route('/api/health', methods=['GET'])
@@ -256,8 +257,8 @@ def upload_video():
 
         # Save video file
         video_file.save(video_path)
-        video_url = f"https://danceai.us-cdp2.choreoapps.devuploads/{video_filename}"
-        processed_video_url = f"C://src//VideoLabellingBackend//Server//uploads//{video_filename}"
+        video_url = f"https://danceai.us-cdp2.choreoapps.devuploads/uploads/{video_filename}"
+        processed_video_url = f"{UPLOADS_FOLDER}//{video_filename}"
 
         print("Processed video url", processed_video_url)
 
@@ -269,8 +270,8 @@ def get_video(filename):
     print("Why this is getting called", filename)
     video_path = f"{UPLOADS_FOLDER}/{filename}"
 
-    # processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
-    # processor.process()
+    processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
+    processor.process()
 
     # Get video frame rate
     cap = cv2.VideoCapture(video_path)
@@ -333,10 +334,11 @@ def get_frame_info():
         video_filename = request.json['videoFilename']
         video_path = f"{UPLOADS_FOLDER}/{video_filename}"
 
-        print("/get frame info - ", video_filename, video_path)
+        print("/get frame info:", video_path)
+        print(video_filename)
 
-        processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
-        processor.process()
+        # processor = AudioProcessor(video_path, app.config['UPLOADS_FOLDER'])
+        # processor.process()
 
         print("process of extracting audio is done")
         # Get video frame rate
