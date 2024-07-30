@@ -151,6 +151,8 @@ def fetch_steps_data(video_filename):
 
 def clear_temp_files():
     global current_video_filename
+    if not os.path.exists(UPLOADS_FOLDER):
+        os.makedirs(UPLOADS_FOLDER)
     for filename in os.listdir(f"{UPLOADS_FOLDER}"):
         file_path = os.path.join(f"{UPLOADS_FOLDER}", filename)
         try:
@@ -171,9 +173,16 @@ def fetch_video():
         return jsonify({"error": "No video URL provided"}), 400
 
     # Clear previous video
+    print("Before brooo")
+    if os.path.exists(UPLOADS_FOLDER):
+        print(f"Uploads folder exists: {UPLOADS_FOLDER}")
+        files = os.listdir(UPLOADS_FOLDER)
+        print(f"Files in {UPLOADS_FOLDER}: {files}")
+    else:
+        print(f"Uploads folder does not exist: {UPLOADS_FOLDER}")
     clear_temp_files()
 
-    print("heyyasuaskadsbaksdah")
+    print("after broooo")
 
     response = requests.get(video_url, stream=True)
     video_filename = os.path.basename(video_url)
@@ -400,4 +409,6 @@ def save_keyframes():
 
 
 if __name__ == "__main__":
+    if not os.path.exists(UPLOADS_FOLDER):
+        os.makedirs(UPLOADS_FOLDER)
     app.run(host='0.0.0.0', port=51040, debug=True)
