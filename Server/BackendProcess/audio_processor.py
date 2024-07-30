@@ -8,6 +8,7 @@ import numpy as np
 import librosa
 import librosa.display
 import matplotlib.pyplot as plt
+import json
 
 
 class AudioProcessor:
@@ -19,18 +20,23 @@ class AudioProcessor:
         self.rate = None
         self.audio_processed = False
 
-        
-
     def extract_audio_from_video(self):
         video = VideoFileClip(self.video_path)
         self.audio_path = os.path.join(self.output_dir, 'extracted_audio.wav')
         if not os.path.exists(self.audio_path):
             video.audio.write_audiofile(self.audio_path)
             self.separate_audio_components()
+        else:
+            self.load_separated_audio_components()
         print("We extracted the audio from video")
 
     def separate_audio_components(self):
         components_dir = os.path.join(self.output_dir, 'htdemucs_6s', os.path.basename(self.audio_path).replace('.wav', ''))
+        if os.path.exists(os.path.join(components_dir, 'separation_done.marker')):
+            print("Audio components already separated.")
+            self.load_separated_audio_components()
+            return
+        
         if not os.path.exists(components_dir):
             command = [
                 'demucs',
@@ -41,23 +47,28 @@ class AudioProcessor:
             subprocess.run(command, check=True)
         
         print("We have separated the components")
-        
+
         components = ['vocals', 'drums', 'bass', 'other', 'guitar', 'piano']
         for component in components:
             component_path = os.path.join(self.output_dir, 'htdemucs_6s', os.path.basename(self.audio_path).replace('.wav', ''), f'{component}.wav')
             signal, rate = torchaudio.load(component_path)
             self.separated_signals[component] = signal.squeeze().numpy()
             self.rate = rate
-        self.save_separated_components()
-
-
-
-    def save_separated_components(self):
-        for component, signal in self.separated_signals.items():
-            output_path = os.path.join(self.output_dir, f'{component}.wav')
-            sf.write(output_path, signal.T, self.rate)
-        print("We have saved the separated components")
+        
+        # Create a marker to indicate separation is done
+        open(os.path.join(components_dir, 'separation_done.marker'), 'w').close()
+        print("Separation marker created.")
     
+    def load_separated_audio_components(self):
+        components = ['vocals', 'drums', 'bass', 'other', 'guitar', 'piano']
+        for component in components:
+            component_path = os.path.join(self.output_dir, 'htdemucs_6s', os.path.basename(self.audio_path).replace('.wav', ''), f'{component}.wav')
+            if os.path.exists(component_path):
+                signal, rate = torchaudio.load(component_path)
+                self.separated_signals[component] = signal.squeeze().numpy()
+                self.rate = rate
+        print("Loaded separated audio components.")
+
     def get_total_frames(self):
         video = VideoFileClip(self.video_path)
         print("Here we are getting the total frames")
@@ -132,34 +143,20 @@ class AudioProcessor:
             'intensity': rms_energy[0]
         }
 
-    # def plot_intensity_curve(self, times, intensities, title):
-    #     plt.figure(figsize=(14, 5))
-    #     plt.plot(times, intensities[:len(times)], label='Intensity (RMS Energy)', color='b')
-    #     plt.xlabel('Time (s)')
-    #     plt.ylabel('Intensity')
-    #     plt.title(title)
-    #     plt.legend()
-    #     plt.show()
-
     def save_segments(self, signal, rate, note_timestamps, output_dir, component):
         segment_dir = os.path.join(output_dir, f'{component}_segments')
         os.makedirs(segment_dir, exist_ok=True)
         for i, (start, end) in enumerate(note_timestamps):
-            segment = signal[:, int(start * rate):int(end * rate)]
-            segment_path = os.path.join(segment_dir, f'segment_{i+1}_{start:.3f}_to_{end:.3f}.wav')
-            sf.write(segment_path, segment.T, rate)
-            print(f"Saved segment {i+1} for {component}: {start:.3f}s to {end:.3f}s at {segment_path}")
+            segment_info = {
+                'start': start,
+                'end': end,
+                'rate': rate
+            }
+            segment_path = os.path.join(segment_dir, f'segment_{i+1}_{start:.3f}_to_{end:.3f}.json')
+            with open(segment_path, 'w') as f:
+                json.dump(segment_info, f)
+            print(f"Saved segment info {i+1} for {component}: {start:.3f}s to {end:.3f}s at {segment_path}")
 
-    # def plot_onsets(self, signal, rate, onset_times, title):
-    #     plt.figure(figsize=(14, 5))
-    #     librosa.display.waveshow(signal[0], sr=rate, alpha=0.6)
-    #     plt.vlines(onset_times, ymin=-1, ymax=1, color='r', linestyle='--', alpha=0.8, label='Onsets')
-    #     plt.title(title)
-    #     plt.xlabel('Time (s)')
-    #     plt.ylabel('Amplitude')
-    #     plt.legend()
-    #     plt.show()
-    
     def get_probable_end_frames(self, start_frame, frame_rate, max_frames=100, window_size=4):
         total_frames = self.get_total_frames()
         probable_end_frames = {}
@@ -184,27 +181,21 @@ class AudioProcessor:
     def process(self):
         self.extract_audio_from_video()
         self.separate_audio_components()
-        self.save_separated_components()
 
-        print("the audio is separated now")
+        print("The audio is separated now")
 
         note_times = {}
         for component, signal in self.separated_signals.items():
             note_timestamps = self.get_note_timestamps(signal, self.rate)
             note_times[component] = note_timestamps
             print(f"Note timestamps for {component}: {note_timestamps}")
-            self.save_segments(signal, self.rate, note_timestamps, self.output_dir, component)
-            # self.plot_onsets(signal, self.rate, self.extract_onset_times(signal, self.rate), f'Onsets for {component}')
+            # self.save_segments(signal, self.rate, note_timestamps, self.output_dir, component)
 
-        # for component, signal in self.separated_signals.items():
-        #     for start, end in note_times[component]:
-        #         features = self.extract_detailed_features(signal, self.rate, start, end)
-        #         self.plot_intensity_curve(features['times'], features['intensity'], f'Intensity for {component} from {start:.3f}s to {end:.3f}s')
-
+        print("Processing complete.")
 
 # Example usage:
 if __name__ == "__main__":
-    video_path = '/Users/rohitacharya/Downloads/loveYa.mp4'
-    output_dir = '/Users/rohitacharya/mmpose/demo/step_segmentation/output1'
+    video_path = '/path/to/video.mp4'
+    output_dir = '/path/to/output_dir'
     processor = AudioProcessor(video_path, output_dir)
     processor.process()

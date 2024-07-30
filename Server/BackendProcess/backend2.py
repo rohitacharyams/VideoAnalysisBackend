@@ -194,7 +194,7 @@ def fetch_video():
 
     current_video_filename = video_filename
     print("the video filename here is :", video_filename)
-    video_url = f"https://danceaibackend.us-cdp2.choreoapps.dev/uploads/{video_filename}"
+    video_url = f"https://danceai.azurewebsites.net/uploads/{video_filename}"
     # Check if uploads folder exists and print files
     if os.path.exists(UPLOADS_FOLDER):
         print(f"Uploads folder exists: {UPLOADS_FOLDER}")
@@ -276,7 +276,7 @@ def upload_video():
 
         # Save video file
         video_file.save(video_path)
-        video_url = f"https://danceaibackend.us-cdp2.choreoapps.dev/uploads/{video_filename}"
+        video_url = f"https://danceai.azurewebsites.net/uploads/{video_filename}"
         processed_video_url = f"{UPLOADS_FOLDER}//{video_filename}"
 
         print("Processed video url", processed_video_url)
